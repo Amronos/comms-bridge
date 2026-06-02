@@ -1,0 +1,34 @@
+# Dependencies
+.bun-cache
+.pnp
+.pnp.js
+node_modules
+
+# Env
+.env.*
+!.env.example
+!.env.test
+
+# macOS-specific files
+.DS_Store
+
+# Nix
+.direnv
+
+# Svelte
+.svelte-kit
+
+# Testing
+coverage
+
+# Turbo
+.turbo
+turbo-cache-key.json
+
+# Vercel
+.vercel
+
+.codex
+dist
+ref-repos
+target
