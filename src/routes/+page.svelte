@@ -204,9 +204,9 @@
 
 	async function closeRealtimeSessionForRecovery() {
 		clearRealtimeRecoveryTimer();
-		await clearConversationHistorySync();
 		closeActiveRealtimeSession();
 		resetRealtimeConnectionState();
+		await clearConversationHistorySync();
 	}
 
 	function setRealtimeMicMuted(muted: boolean) {
@@ -290,9 +290,8 @@
 			const bootstrap = await convex.action(api.realtime.createRealtimeSession, {
 				productSessionId
 			});
-			const realtimeBootstrap = bootstrap;
 			let session: RealtimeSession | null = null;
-			session = await createSpeechToSpeechSession(realtimeBootstrap, convex, {
+			session = await createSpeechToSpeechSession(bootstrap, convex, {
 				onPeerConnectionStateChange: (state) => {
 					if (!session || session !== activeRealtimeSession) return;
 
@@ -303,7 +302,7 @@
 						state.iceConnectionState === 'failed'
 					) {
 						setRealtimeStatusMessage('Realtime connection interrupted. Reconnecting...', 15000);
-						scheduleRealtimeRecovery(session, realtimeBootstrap.productSessionId);
+						scheduleRealtimeRecovery(session, bootstrap.productSessionId);
 						return;
 					}
 
@@ -352,7 +351,7 @@
 
 			activeRealtimeSession = session;
 			await session.connect({
-				apiKey: realtimeBootstrap.clientSecret
+				apiKey: bootstrap.clientSecret
 			});
 
 			if (session !== activeRealtimeSession) {
@@ -360,7 +359,7 @@
 				return;
 			}
 
-			await seedRealtimeConversationHistory(session, realtimeBootstrap.conversationHistory);
+			await seedRealtimeConversationHistory(session, bootstrap.conversationHistory);
 			if (session !== activeRealtimeSession) {
 				session.close();
 				return;
@@ -369,7 +368,7 @@
 			activeConversationHistorySync = persistRealtimeConversationHistory(
 				session,
 				convex,
-				realtimeBootstrap,
+				bootstrap,
 				{
 					onConversationHistorySyncError: (error) => {
 						errorMessage = `Failed to save conversation history. ${toErrorMessage(error)}`;
