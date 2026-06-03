@@ -164,7 +164,6 @@ export function persistRealtimeConversationHistory(
 					) {
 						latestSnapshot = snapshotToPersist;
 					}
-					diagnostics.onConversationHistorySyncError?.(error);
 					throw error;
 				}
 			}
@@ -181,7 +180,9 @@ export function persistRealtimeConversationHistory(
 			history: cloneHistory(history),
 			historyRevision: nextHistoryRevision
 		};
-		void runFlush().catch(() => {});
+		void runFlush().catch((error) => {
+			diagnostics.onConversationHistorySyncError?.(error);
+		});
 	};
 
 	session.on('history_updated', handleHistoryUpdated);
