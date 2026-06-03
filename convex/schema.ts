@@ -24,8 +24,7 @@ export default defineSchema({
 		item: realtimeConversationItemValidator
 	})
 		.index('by_productSessionId', ['productSessionId'])
-		.index('by_productSessionId_order', ['productSessionId', 'order'])
-		.index('by_productSessionId_itemId', ['productSessionId', 'itemId']),
+		.index('by_productSessionId_order', ['productSessionId', 'order']),
 	engineeringPlans: defineTable({
 		productSessionId: v.id('productSessions'),
 		title: v.string(),
