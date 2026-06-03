@@ -53,8 +53,7 @@ export const saveEngineeringPlan = mutation({
 				implementationSteps: args.implementationSteps,
 				assumptions: args.assumptions,
 				risks: args.risks,
-				openQuestions: args.openQuestions,
-				updatedAt: timestamp
+				openQuestions: args.openQuestions
 			});
 
 			await ctx.db.patch(args.productSessionId, {
@@ -77,9 +76,7 @@ export const saveEngineeringPlan = mutation({
 			implementationSteps: args.implementationSteps,
 			assumptions: args.assumptions,
 			risks: args.risks,
-			openQuestions: args.openQuestions,
-			createdAt: timestamp,
-			updatedAt: timestamp
+			openQuestions: args.openQuestions
 		});
 
 		await ctx.db.patch(args.productSessionId, {

@@ -1,11 +1,20 @@
 import type { UserIdentity } from 'convex/server';
 import { v } from 'convex/values';
+import type { Infer } from 'convex/values';
 
 import { internalQuery, mutation, query } from './_generated/server';
 import {
 	getEngineeringPlanForProductSession,
 	resolveProductSessionTitle
 } from './productSessionTitle';
+
+export const ownedProductSessionValidator = v.object({
+	id: v.id('productSessions'),
+	productDescription: v.string(),
+	productName: v.string()
+});
+
+export type OwnedProductSession = Infer<typeof ownedProductSessionValidator>;
 
 export const listProductSessions = query({
 	args: {},
@@ -29,9 +38,10 @@ export const listProductSessions = query({
 				q.eq('ownerTokenIdentifier', identity.tokenIdentifier)
 			)
 			.collect();
+		const sortedSessions = [...sessions].sort((left, right) => right.updatedAt - left.updatedAt);
 
 		return await Promise.all(
-			sessions.map(async (session) => {
+			sortedSessions.map(async (session) => {
 				const engineeringPlan = await getEngineeringPlanForProductSession(ctx, session._id);
 
 				return {
@@ -69,7 +79,6 @@ export const createProductSession = mutation({
 			ownerEmail: identity.email ?? '',
 			productName,
 			productDescription,
-			createdAt: now,
 			updatedAt: now
 		});
 
@@ -106,8 +115,15 @@ export const deleteProductSession = mutation({
 			.query('engineeringPlans')
 			.withIndex('by_productSessionId', (q) => q.eq('productSessionId', session._id))
 			.collect();
+		const conversationItems = await ctx.db
+			.query('productSessionConversationItems')
+			.withIndex('by_productSessionId', (q) => q.eq('productSessionId', session._id))
+			.collect();
 
 		await Promise.all(engineeringPlans.map((plan) => ctx.db.delete(plan._id)));
+		await Promise.all(
+			conversationItems.map((conversationItem) => ctx.db.delete(conversationItem._id))
+		);
 		await ctx.db.delete(session._id);
 
 		return null;
@@ -118,12 +134,8 @@ export const getOwnedProductSession = internalQuery({
 	args: {
 		productSessionId: v.id('productSessions')
 	},
-	returns: v.object({
-		id: v.id('productSessions'),
-		productDescription: v.string(),
-		productName: v.string()
-	}),
-	handler: async (ctx, args) => {
+	returns: ownedProductSessionValidator,
+	handler: async (ctx, args): Promise<OwnedProductSession> => {
 		const identity: UserIdentity | null = await ctx.auth.getUserIdentity();
 		if (!identity) {
 			throw new Error('Authentication required to load a product session.');

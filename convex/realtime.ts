@@ -2,14 +2,21 @@
 
 import { createHash } from 'node:crypto';
 
+import type { RealtimeSessionConfig } from '@openai/agents/realtime';
 import OpenAI from 'openai';
 import type { ClientSecretCreateParams } from 'openai/resources/realtime/client-secrets';
-import { makeFunctionReference } from 'convex/server';
+import type { UserIdentity } from 'convex/server';
 import { v } from 'convex/values';
 
-import { action } from './_generated/server';
+import { internal } from './_generated/api';
 import type { Id } from './_generated/dataModel';
-import type { UserIdentity } from 'convex/server';
+import { action } from './_generated/server';
+import type { ProductSessionConversationHistory } from './productSessionConversation';
+import type { OwnedProductSession } from './productSessions';
+import {
+	realtimeConversationItemValidator,
+	type RealtimeConversationItem
+} from './realtimeConversationItems';
 
 const REALTIME_MODEL: string = 'gpt-realtime-2';
 const REALTIME_VOICE: string = 'marin';
@@ -19,15 +26,18 @@ type ProductSessionArgs = {
 	productSessionId: Id<'productSessions'>;
 };
 
-const getOwnedProductSessionQuery = makeFunctionReference<
-	'query',
-	ProductSessionArgs,
-	{
-		id: Id<'productSessions'>;
-		productDescription: string;
-		productName: string;
-	}
->('productSessions:getOwnedProductSession');
+type CreateRealtimeSessionResult = {
+	agentName: string;
+	clientSecret: string;
+	config: Partial<RealtimeSessionConfig>;
+	conversationHistory: RealtimeConversationItem[];
+	expiresAt: number | null;
+	instructions: string;
+	model: string;
+	productDescription: string;
+	productName: string;
+	productSessionId: ProductSessionArgs['productSessionId'];
+};
 
 function buildVoiceAgentInstructions(signedInName: string, productName: string): string {
 	return [
@@ -89,6 +99,7 @@ export const createRealtimeSession = action({
 		agentName: v.string(),
 		clientSecret: v.string(),
 		config: v.any(),
+		conversationHistory: v.array(realtimeConversationItemValidator),
 		expiresAt: v.union(v.float64(), v.null()),
 		instructions: v.string(),
 		model: v.string(),
@@ -96,7 +107,7 @@ export const createRealtimeSession = action({
 		productName: v.string(),
 		productSessionId: v.id('productSessions')
 	}),
-	handler: async (ctx, args) => {
+	handler: async (ctx, args): Promise<CreateRealtimeSessionResult> => {
 		const identity: UserIdentity | null = await ctx.auth.getUserIdentity();
 		if (!identity) {
 			throw new Error('Authentication required to create a realtime session.');
@@ -108,7 +119,14 @@ export const createRealtimeSession = action({
 		}
 
 		const signedInName: string = identity.name ?? identity.givenName ?? 'Authenticated user';
-		const productSession = await ctx.runQuery(getOwnedProductSessionQuery, args);
+		const productSession: OwnedProductSession = await ctx.runQuery(
+			internal.productSessions.getOwnedProductSession,
+			args
+		);
+		const conversationHistory: ProductSessionConversationHistory = await ctx.runQuery(
+			internal.productSessionConversation.getOwnedProductSessionConversationHistory,
+			args
+		);
 		const instructions: string = buildVoiceAgentInstructions(
 			signedInName,
 			productSession.productName
@@ -134,6 +152,7 @@ export const createRealtimeSession = action({
 			agentName: 'Comms Bridge',
 			clientSecret: payload.value,
 			config,
+			conversationHistory,
 			expiresAt: payload.expires_at ?? null,
 			instructions,
 			model: REALTIME_MODEL,

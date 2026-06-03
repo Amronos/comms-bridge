@@ -9,18 +9,22 @@
  */
 
 import type * as engineeringPlans from '../engineeringPlans.js';
+import type * as productSessionConversation from '../productSessionConversation.js';
 import type * as productSessionTitle from '../productSessionTitle.js';
 import type * as productSessions from '../productSessions.js';
 import type * as realtime from '../realtime.js';
+import type * as realtimeConversationItems from '../realtimeConversationItems.js';
 import type * as viewer from '../viewer.js';
 
 import type { ApiFromModules, FilterApi, FunctionReference } from 'convex/server';
 
 declare const fullApi: ApiFromModules<{
 	engineeringPlans: typeof engineeringPlans;
+	productSessionConversation: typeof productSessionConversation;
 	productSessionTitle: typeof productSessionTitle;
 	productSessions: typeof productSessions;
 	realtime: typeof realtime;
+	realtimeConversationItems: typeof realtimeConversationItems;
 	viewer: typeof viewer;
 }>;
 

@@ -11,11 +11,18 @@
 		SessionContextMenu as SessionContextMenuState
 	} from '$lib/components/home/types.js';
 	import VoiceAssistantPanel from '$lib/components/home/VoiceAssistantPanel.svelte';
-	import { browserSupportsLiveAudio, createSpeechToSpeechSession } from '$lib/voice/realtime';
+	import {
+		browserSupportsLiveAudio,
+		createSpeechToSpeechSession,
+		persistRealtimeConversationHistory,
+		seedRealtimeConversationHistory
+	} from '$lib/voice/realtime';
+	import type { RealtimeConversationHistorySync } from '$lib/voice/realtime';
 	import { api } from '../../convex/_generated/api.js';
 	import type { Id } from '../../convex/_generated/dataModel.js';
 
 	let activeRealtimeSession: RealtimeSession | null = null;
+	let activeConversationHistorySync: RealtimeConversationHistorySync | null = null;
 	let errorMessage = $state<string | null>(null);
 	let realtimeStatusMessage = $state<string | null>(null);
 	let isRealtimeConnecting = $state(false);
@@ -31,6 +38,7 @@
 	let selectedSessionId = $state<Id<'productSessions'> | null>(null);
 	let contextMenu = $state<SessionContextMenuState | null>(null);
 	let deletingSessionIds = $state<Id<'productSessions'>[]>([]);
+	let hasAutoSelectedSession = false;
 
 	const convex = useConvexClient();
 	const productSessionsQuery = useQuery(api.productSessions.listProductSessions, () =>
@@ -66,6 +74,7 @@
 			stopRealtimeConversation();
 			pendingProductSessionIds = [];
 			selectedSessionId = null;
+			hasAutoSelectedSession = false;
 			return;
 		}
 
@@ -88,6 +97,16 @@
 			stopRealtimeConversation();
 			selectedSessionId = null;
 		}
+	});
+
+	$effect(() => {
+		if (!$authState.isAuthenticated) return;
+		if (hasAutoSelectedSession || selectedSessionId || pendingProductSessionIds.length > 0) return;
+		if (!productSessionsQuery.data || productSessionsQuery.error || productSessions.length === 0)
+			return;
+
+		selectedSessionId = productSessions[0].id;
+		hasAutoSelectedSession = true;
 	});
 
 	onDestroy(() => {
@@ -117,6 +136,13 @@
 		realtimeStatusTimer = null;
 	}
 
+	function clearConversationHistorySync() {
+		const conversationHistorySync = activeConversationHistorySync;
+		activeConversationHistorySync = null;
+		void conversationHistorySync?.flush();
+		conversationHistorySync?.dispose();
+	}
+
 	function setRealtimeStatusMessage(message: string, visibleMs = 10000) {
 		clearRealtimeStatusTimer();
 		realtimeStatusMessage = message;
@@ -129,6 +155,7 @@
 	function stopRealtimeConversation() {
 		clearRealtimeStatusTimer();
 		clearRealtimeRecoveryTimer();
+		clearConversationHistorySync();
 		const session = activeRealtimeSession;
 		activeRealtimeSession = null;
 		session?.close();
@@ -143,6 +170,7 @@
 
 	function markRealtimeDisconnected() {
 		clearRealtimeRecoveryTimer();
+		clearConversationHistorySync();
 		activeRealtimeSession = null;
 		isRealtimeConnecting = false;
 		isRealtimeConnected = false;
@@ -157,6 +185,7 @@
 
 	function closeRealtimeSessionForRecovery() {
 		clearRealtimeRecoveryTimer();
+		clearConversationHistorySync();
 		const session = activeRealtimeSession;
 		activeRealtimeSession = null;
 		session?.close();
@@ -246,8 +275,9 @@
 			const bootstrap = await convex.action(api.realtime.createRealtimeSession, {
 				productSessionId
 			});
+			const realtimeBootstrap = bootstrap;
 			let session: RealtimeSession | null = null;
-			session = await createSpeechToSpeechSession(bootstrap, convex, {
+			session = await createSpeechToSpeechSession(realtimeBootstrap, convex, {
 				onPeerConnectionStateChange: (state) => {
 					if (!session || session !== activeRealtimeSession) return;
 
@@ -258,7 +288,7 @@
 						state.iceConnectionState === 'failed'
 					) {
 						setRealtimeStatusMessage('Realtime connection interrupted. Reconnecting...', 15000);
-						scheduleRealtimeRecovery(session, bootstrap.productSessionId);
+						scheduleRealtimeRecovery(session, realtimeBootstrap.productSessionId);
 						return;
 					}
 
@@ -307,13 +337,34 @@
 
 			activeRealtimeSession = session;
 			await session.connect({
-				apiKey: bootstrap.clientSecret
+				apiKey: realtimeBootstrap.clientSecret
 			});
 
 			if (session !== activeRealtimeSession) {
 				session.close();
 				return;
 			}
+
+			await seedRealtimeConversationHistory(session, realtimeBootstrap.conversationHistory);
+			if (session !== activeRealtimeSession) {
+				session.close();
+				return;
+			}
+
+			activeConversationHistorySync = persistRealtimeConversationHistory(
+				session,
+				convex,
+				realtimeBootstrap,
+				{
+					onConversationHistorySyncError: (error) => {
+						if (session !== activeRealtimeSession) {
+							return;
+						}
+
+						errorMessage = toErrorMessage(error);
+					}
+				}
+			);
 
 			isRealtimeConnecting = false;
 			isRealtimeConnected = true;
