@@ -11,7 +11,7 @@ import { v } from 'convex/values';
 import { internal } from './_generated/api';
 import type { Id } from './_generated/dataModel';
 import { action } from './_generated/server';
-import type { ProductSessionConversationHistory } from './productSessionConversation';
+import type { ProductSessionConversationSnapshot } from './productSessionConversation';
 import type { OwnedProductSession } from './productSessions';
 import {
 	realtimeConversationItemValidator,
@@ -31,6 +31,7 @@ type CreateRealtimeSessionResult = {
 	clientSecret: string;
 	config: Partial<RealtimeSessionConfig>;
 	conversationHistory: RealtimeConversationItem[];
+	conversationHistoryRevision: number;
 	expiresAt: number | null;
 	instructions: string;
 	model: string;
@@ -100,6 +101,7 @@ export const createRealtimeSession = action({
 		clientSecret: v.string(),
 		config: v.any(),
 		conversationHistory: v.array(realtimeConversationItemValidator),
+		conversationHistoryRevision: v.number(),
 		expiresAt: v.union(v.float64(), v.null()),
 		instructions: v.string(),
 		model: v.string(),
@@ -123,8 +125,8 @@ export const createRealtimeSession = action({
 			internal.productSessions.getOwnedProductSession,
 			args
 		);
-		const conversationHistory: ProductSessionConversationHistory = await ctx.runQuery(
-			internal.productSessionConversation.getOwnedProductSessionConversationHistory,
+		const conversationSnapshot: ProductSessionConversationSnapshot = await ctx.runQuery(
+			internal.productSessionConversation.getOwnedProductSessionConversationSnapshot,
 			args
 		);
 		const instructions: string = buildVoiceAgentInstructions(
@@ -152,7 +154,8 @@ export const createRealtimeSession = action({
 			agentName: 'Comms Bridge',
 			clientSecret: payload.value,
 			config,
-			conversationHistory,
+			conversationHistory: conversationSnapshot.history,
+			conversationHistoryRevision: conversationSnapshot.historyRevision,
 			expiresAt: payload.expires_at ?? null,
 			instructions,
 			model: REALTIME_MODEL,

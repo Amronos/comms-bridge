@@ -3,7 +3,7 @@ import { v } from 'convex/values';
 
 import type { Id } from './_generated/dataModel';
 import type { MutationCtx, QueryCtx } from './_generated/server';
-import { internalQuery, mutation, query } from './_generated/server';
+import { internalQuery, mutation } from './_generated/server';
 import {
 	realtimeConversationItemValidator,
 	type RealtimeConversationItem
@@ -11,6 +11,10 @@ import {
 
 type RealtimeMessageItem = Extract<RealtimeConversationItem, { type: 'message' }>;
 export type ProductSessionConversationHistory = RealtimeConversationItem[];
+export type ProductSessionConversationSnapshot = {
+	history: ProductSessionConversationHistory;
+	historyRevision: number;
+};
 
 function readConversationTextContent(content: RealtimeMessageItem['content']): string {
 	const parts = content
@@ -59,56 +63,72 @@ async function requireOwnedProductSession(
 	return session;
 }
 
-export const getProductSessionConversationHistory = query({
-	args: {
-		productSessionId: v.id('productSessions')
-	},
-	returns: v.array(realtimeConversationItemValidator),
-	handler: async (ctx, args) => {
-		await requireOwnedProductSession(ctx, args.productSessionId);
+async function getConversationStateRecord(
+	ctx: QueryCtx | MutationCtx,
+	productSessionId: Id<'productSessions'>
+) {
+	return ctx.db
+		.query('productSessionConversations')
+		.withIndex('by_productSessionId', (q) => q.eq('productSessionId', productSessionId))
+		.unique();
+}
 
-		const conversationItems = await ctx.db
-			.query('productSessionConversationItems')
-			.withIndex('by_productSessionId_order', (q) =>
-				q.eq('productSessionId', args.productSessionId)
-			)
-			.collect();
+async function getConversationHistory(
+	ctx: QueryCtx | MutationCtx,
+	productSessionId: Id<'productSessions'>
+): Promise<ProductSessionConversationHistory> {
+	const conversationItems = await ctx.db
+		.query('productSessionConversationItems')
+		.withIndex('by_productSessionId_order', (q) => q.eq('productSessionId', productSessionId))
+		.collect();
 
-		return conversationItems.map((item) => item.item);
-	}
+	return conversationItems.map((item) => item.item);
+}
+
+export const productSessionConversationSnapshotValidator = v.object({
+	history: v.array(realtimeConversationItemValidator),
+	historyRevision: v.number()
 });
 
-export const getOwnedProductSessionConversationHistory = internalQuery({
+export const getOwnedProductSessionConversationSnapshot = internalQuery({
 	args: {
 		productSessionId: v.id('productSessions')
 	},
-	returns: v.array(realtimeConversationItemValidator),
-	handler: async (ctx, args): Promise<ProductSessionConversationHistory> => {
+	returns: productSessionConversationSnapshotValidator,
+	handler: async (ctx, args): Promise<ProductSessionConversationSnapshot> => {
 		await requireOwnedProductSession(ctx, args.productSessionId);
+		const [history, conversationState] = await Promise.all([
+			getConversationHistory(ctx, args.productSessionId),
+			getConversationStateRecord(ctx, args.productSessionId)
+		]);
 
-		const conversationItems = await ctx.db
-			.query('productSessionConversationItems')
-			.withIndex('by_productSessionId_order', (q) =>
-				q.eq('productSessionId', args.productSessionId)
-			)
-			.collect();
-
-		return conversationItems.map((item) => item.item);
+		return {
+			history,
+			historyRevision: conversationState?.historyRevision ?? 0
+		};
 	}
 });
 
 export const syncProductSessionConversationHistory = mutation({
 	args: {
 		productSessionId: v.id('productSessions'),
+		historyRevision: v.number(),
 		history: v.array(realtimeConversationItemValidator)
 	},
 	returns: v.object({
-		synchronizedCount: v.number()
+		latestRevision: v.number()
 	}),
 	handler: async (ctx, args) => {
 		await requireOwnedProductSession(ctx, args.productSessionId);
 
 		const timestamp = Date.now();
+		const conversationState = await getConversationStateRecord(ctx, args.productSessionId);
+		if (conversationState && args.historyRevision <= conversationState.historyRevision) {
+			return {
+				latestRevision: conversationState.historyRevision
+			};
+		}
+
 		const existingItems = await ctx.db
 			.query('productSessionConversationItems')
 			.withIndex('by_productSessionId', (q) => q.eq('productSessionId', args.productSessionId))
@@ -160,9 +180,21 @@ export const syncProductSessionConversationHistory = mutation({
 		}
 
 		await ctx.db.patch(args.productSessionId, productSessionPatch);
+		if (conversationState) {
+			await ctx.db.patch(conversationState._id, {
+				historyRevision: args.historyRevision,
+				updatedAt: timestamp
+			});
+		} else {
+			await ctx.db.insert('productSessionConversations', {
+				productSessionId: args.productSessionId,
+				historyRevision: args.historyRevision,
+				updatedAt: timestamp
+			});
+		}
 
 		return {
-			synchronizedCount: args.history.length
+			latestRevision: args.historyRevision
 		};
 	}
 });

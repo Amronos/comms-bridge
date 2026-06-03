@@ -71,7 +71,7 @@
 
 	$effect(() => {
 		if (!$authState.isAuthenticated) {
-			stopRealtimeConversation();
+			void stopRealtimeConversation();
 			pendingProductSessionIds = [];
 			selectedSessionId = null;
 			hasAutoSelectedSession = false;
@@ -94,7 +94,7 @@
 		}
 
 		if (!pendingProductSessionIds.includes(selectedSessionId)) {
-			stopRealtimeConversation();
+			void stopRealtimeConversation();
 			selectedSessionId = null;
 		}
 	});
@@ -110,7 +110,7 @@
 	});
 
 	onDestroy(() => {
-		stopRealtimeConversation();
+		void stopRealtimeConversation();
 	});
 
 	function toErrorMessage(error: unknown) {
@@ -136,11 +136,25 @@
 		realtimeStatusTimer = null;
 	}
 
-	function clearConversationHistorySync() {
+	function clearActiveRealtimeSession() {
+		activeRealtimeSession = null;
+	}
+
+	function closeActiveRealtimeSession() {
+		const session = activeRealtimeSession;
+		clearActiveRealtimeSession();
+		session?.close();
+	}
+
+	async function clearConversationHistorySync() {
 		const conversationHistorySync = activeConversationHistorySync;
 		activeConversationHistorySync = null;
-		void conversationHistorySync?.flush();
-		conversationHistorySync?.dispose();
+		if (!conversationHistorySync) return;
+		try {
+			await conversationHistorySync.flush();
+		} finally {
+			conversationHistorySync.dispose();
+		}
 	}
 
 	function setRealtimeStatusMessage(message: string, visibleMs = 10000) {
@@ -152,29 +166,29 @@
 		}, visibleMs);
 	}
 
-	function stopRealtimeConversation() {
-		clearRealtimeStatusTimer();
-		clearRealtimeRecoveryTimer();
-		clearConversationHistorySync();
-		const session = activeRealtimeSession;
-		activeRealtimeSession = null;
-		session?.close();
+	function resetRealtimeConnectionState() {
 		isRealtimeConnecting = false;
 		isRealtimeConnected = false;
 		isAssistantSpeaking = false;
+	}
+
+	async function stopRealtimeConversation() {
+		clearRealtimeStatusTimer();
+		clearRealtimeRecoveryTimer();
+		await clearConversationHistorySync();
+		closeActiveRealtimeSession();
+		resetRealtimeConnectionState();
 		isMicMuted = true;
 		realtimeRecoveryAttempts = 0;
 		realtimeRecoveryInProgress = false;
 		realtimeStatusMessage = null;
 	}
 
-	function markRealtimeDisconnected() {
+	async function markRealtimeDisconnected() {
 		clearRealtimeRecoveryTimer();
-		clearConversationHistorySync();
-		activeRealtimeSession = null;
-		isRealtimeConnecting = false;
-		isRealtimeConnected = false;
-		isAssistantSpeaking = false;
+		await clearConversationHistorySync();
+		clearActiveRealtimeSession();
+		resetRealtimeConnectionState();
 	}
 
 	function clearRealtimeRecoveryTimer() {
@@ -183,15 +197,11 @@
 		realtimeRecoveryTimer = null;
 	}
 
-	function closeRealtimeSessionForRecovery() {
+	async function closeRealtimeSessionForRecovery() {
 		clearRealtimeRecoveryTimer();
-		clearConversationHistorySync();
-		const session = activeRealtimeSession;
-		activeRealtimeSession = null;
-		session?.close();
-		isRealtimeConnecting = false;
-		isRealtimeConnected = false;
-		isAssistantSpeaking = false;
+		await clearConversationHistorySync();
+		closeActiveRealtimeSession();
+		resetRealtimeConnectionState();
 	}
 
 	function setRealtimeMicMuted(muted: boolean) {
@@ -214,7 +224,7 @@
 		realtimeRecoveryInProgress = true;
 		realtimeRecoveryAttempts += 1;
 		setRealtimeStatusMessage('Realtime connection lost. Reconnecting...', 15000);
-		closeRealtimeSessionForRecovery();
+		await closeRealtimeSessionForRecovery();
 
 		try {
 			await startRealtimeConversation({
@@ -324,13 +334,13 @@
 				if (session !== activeRealtimeSession) return;
 				errorMessage = toErrorMessage(event.error);
 				if (session.transport.status === 'disconnected') {
-					stopRealtimeConversation();
+					void stopRealtimeConversation();
 				}
 			});
 
 			session.transport.on('disconnected', () => {
 				if (session !== activeRealtimeSession) return;
-				markRealtimeDisconnected();
+				void markRealtimeDisconnected();
 				errorMessage = 'Realtime voice session disconnected.';
 				setRealtimeStatusMessage('Realtime transport disconnected.', 15000);
 			});
@@ -357,11 +367,7 @@
 				realtimeBootstrap,
 				{
 					onConversationHistorySyncError: (error) => {
-						if (session !== activeRealtimeSession) {
-							return;
-						}
-
-						errorMessage = toErrorMessage(error);
+						errorMessage = `Failed to save conversation history. ${toErrorMessage(error)}`;
 					}
 				}
 			);
@@ -375,7 +381,7 @@
 			);
 		} catch (error) {
 			errorMessage = toErrorMessage(error);
-			stopRealtimeConversation();
+			void stopRealtimeConversation();
 		}
 	}
 
@@ -397,12 +403,12 @@
 			return;
 		}
 
-		stopRealtimeConversation();
+		void stopRealtimeConversation();
 		selectedSessionId = sessionId;
 	}
 
 	function startNewSession() {
-		stopRealtimeConversation();
+		void stopRealtimeConversation();
 		errorMessage = null;
 		selectedSessionId = null;
 	}
@@ -427,7 +433,7 @@
 
 		try {
 			if (sessionId === selectedSessionId) {
-				stopRealtimeConversation();
+				void stopRealtimeConversation();
 				selectedSessionId = null;
 			}
 

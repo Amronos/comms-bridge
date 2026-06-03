@@ -12,6 +12,11 @@ export default defineSchema({
 		productDescription: v.string(),
 		updatedAt: v.number()
 	}).index('by_ownerTokenIdentifier', ['ownerTokenIdentifier']),
+	productSessionConversations: defineTable({
+		productSessionId: v.id('productSessions'),
+		historyRevision: v.number(),
+		updatedAt: v.number()
+	}).index('by_productSessionId', ['productSessionId']),
 	productSessionConversationItems: defineTable({
 		productSessionId: v.id('productSessions'),
 		itemId: v.string(),

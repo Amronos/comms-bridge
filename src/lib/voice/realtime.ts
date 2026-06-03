@@ -16,6 +16,7 @@ export type RealtimeSessionBootstrap = {
 	clientSecret: string;
 	config: Partial<RealtimeSessionConfig>;
 	conversationHistory: RealtimeItem[];
+	conversationHistoryRevision: number;
 	expiresAt: number | null;
 	instructions: string;
 	model: string;
@@ -127,9 +128,13 @@ export function persistRealtimeConversationHistory(
 	bootstrap: RealtimeSessionBootstrap,
 	diagnostics: RealtimeSessionDiagnostics = {}
 ): RealtimeConversationHistorySync {
-	let latestHistory: RealtimeItem[] | null = null;
+	let latestSnapshot: {
+		history: RealtimeItem[];
+		historyRevision: number;
+	} | null = null;
 	let flushPromise: Promise<void> | null = null;
-	let flushTimer: ReturnType<typeof setTimeout> | null = null;
+	let nextHistoryRevision = bootstrap.conversationHistoryRevision;
+	const getLatestSnapshot = () => latestSnapshot;
 
 	const runFlush = async () => {
 		if (flushPromise) {
@@ -137,20 +142,28 @@ export function persistRealtimeConversationHistory(
 		}
 
 		flushPromise = (async () => {
-			while (latestHistory) {
-				const historyToPersist = latestHistory;
-				latestHistory = null;
+			while (latestSnapshot) {
+				const snapshotToPersist = latestSnapshot;
+				latestSnapshot = null;
 
 				try {
-					await convex.mutation(
+					const result = await convex.mutation(
 						api.productSessionConversation.syncProductSessionConversationHistory,
 						{
 							productSessionId: bootstrap.productSessionId,
-							history: historyToPersist
+							historyRevision: snapshotToPersist.historyRevision,
+							history: snapshotToPersist.history
 						}
 					);
+					nextHistoryRevision = Math.max(nextHistoryRevision, result.latestRevision);
 				} catch (error) {
-					latestHistory = historyToPersist;
+					const queuedSnapshot = getLatestSnapshot();
+					if (
+						!queuedSnapshot ||
+						queuedSnapshot.historyRevision < snapshotToPersist.historyRevision
+					) {
+						latestSnapshot = snapshotToPersist;
+					}
 					diagnostics.onConversationHistorySyncError?.(error);
 					throw error;
 				}
@@ -162,37 +175,22 @@ export function persistRealtimeConversationHistory(
 		return flushPromise;
 	};
 
-	const scheduleFlush = () => {
-		if (flushTimer) {
-			clearTimeout(flushTimer);
-		}
-
-		flushTimer = setTimeout(() => {
-			flushTimer = null;
-			void runFlush();
-		}, 150);
-	};
-
 	const handleHistoryUpdated = (history: RealtimeItem[]) => {
-		latestHistory = cloneHistory(history);
-		scheduleFlush();
+		nextHistoryRevision += 1;
+		latestSnapshot = {
+			history: cloneHistory(history),
+			historyRevision: nextHistoryRevision
+		};
+		void runFlush().catch(() => {});
 	};
 
 	session.on('history_updated', handleHistoryUpdated);
 
 	return {
 		dispose: () => {
-			if (flushTimer) {
-				clearTimeout(flushTimer);
-				flushTimer = null;
-			}
 			session.off('history_updated', handleHistoryUpdated);
 		},
 		flush: async () => {
-			if (flushTimer) {
-				clearTimeout(flushTimer);
-				flushTimer = null;
-			}
 			await runFlush();
 		}
 	};

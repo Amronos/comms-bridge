@@ -119,11 +119,18 @@ export const deleteProductSession = mutation({
 			.query('productSessionConversationItems')
 			.withIndex('by_productSessionId', (q) => q.eq('productSessionId', session._id))
 			.collect();
+		const conversationState = await ctx.db
+			.query('productSessionConversations')
+			.withIndex('by_productSessionId', (q) => q.eq('productSessionId', session._id))
+			.unique();
 
 		await Promise.all(engineeringPlans.map((plan) => ctx.db.delete(plan._id)));
 		await Promise.all(
 			conversationItems.map((conversationItem) => ctx.db.delete(conversationItem._id))
 		);
+		if (conversationState) {
+			await ctx.db.delete(conversationState._id);
+		}
 		await ctx.db.delete(session._id);
 
 		return null;
