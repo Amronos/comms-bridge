@@ -177,13 +177,16 @@
 	async function stopRealtimeConversation() {
 		clearRealtimeStatusTimer();
 		clearRealtimeRecoveryTimer();
-		await clearConversationHistorySync();
 		closeActiveRealtimeSession();
 		resetRealtimeConnectionState();
 		isMicMuted = true;
 		realtimeRecoveryAttempts = 0;
 		realtimeRecoveryInProgress = false;
 		realtimeStatusMessage = null;
+
+		// Clear the active session state immediately so follow-up UI actions target the new session,
+		// then let the slower history flush finish in the background of this shutdown call.
+		await clearConversationHistorySync();
 	}
 
 	async function markRealtimeDisconnected() {
@@ -435,8 +438,8 @@
 
 		try {
 			if (sessionId === selectedSessionId) {
-				void stopRealtimeConversation();
 				selectedSessionId = null;
+				await stopRealtimeConversation();
 			}
 
 			await convex.mutation(api.productSessions.deleteProductSession, {
