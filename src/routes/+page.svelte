@@ -191,9 +191,9 @@
 
 	async function markRealtimeDisconnected() {
 		clearRealtimeRecoveryTimer();
-		await clearConversationHistorySync();
 		clearActiveRealtimeSession();
 		resetRealtimeConnectionState();
+		await clearConversationHistorySync();
 	}
 
 	function clearRealtimeRecoveryTimer() {

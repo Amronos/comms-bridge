@@ -71,6 +71,7 @@ const realtimeMcpCallItemValidator = v.object({
 
 const realtimeMcpApprovalRequestItemValidator = v.object({
 	itemId: v.string(),
+	previousItemId: v.optional(v.union(v.string(), v.null())),
 	type: v.literal('mcp_approval_request'),
 	serverLabel: v.string(),
 	name: v.string(),
