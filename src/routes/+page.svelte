@@ -152,6 +152,8 @@
 		if (!conversationHistorySync) return;
 		try {
 			await conversationHistorySync.flush();
+		} catch (error) {
+			errorMessage = `Failed to save conversation history. ${toErrorMessage(error)}`;
 		} finally {
 			conversationHistorySync.dispose();
 		}
