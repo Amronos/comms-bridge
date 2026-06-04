@@ -11,11 +11,18 @@
 		SessionContextMenu as SessionContextMenuState
 	} from '$lib/components/home/types.js';
 	import VoiceAssistantPanel from '$lib/components/home/VoiceAssistantPanel.svelte';
-	import { browserSupportsLiveAudio, createSpeechToSpeechSession } from '$lib/voice/realtime';
+	import {
+		browserSupportsLiveAudio,
+		createSpeechToSpeechSession,
+		persistRealtimeConversationHistory,
+		seedRealtimeConversationHistory
+	} from '$lib/voice/realtime';
+	import type { RealtimeConversationHistorySync } from '$lib/voice/realtime';
 	import { api } from '../../convex/_generated/api.js';
 	import type { Id } from '../../convex/_generated/dataModel.js';
 
 	let activeRealtimeSession: RealtimeSession | null = null;
+	let activeConversationHistorySync: RealtimeConversationHistorySync | null = null;
 	let errorMessage = $state<string | null>(null);
 	let realtimeStatusMessage = $state<string | null>(null);
 	let isRealtimeConnecting = $state(false);
@@ -27,10 +34,13 @@
 	let realtimeRecoveryInProgress = false;
 	let realtimeRecoveryTimer: ReturnType<typeof setTimeout> | null = null;
 	let realtimeStatusTimer: ReturnType<typeof setTimeout> | null = null;
+	let sessionSelectionRequestId = 0;
+	let pendingSelectedSessionId: Id<'productSessions'> | null | undefined = undefined;
 
 	let selectedSessionId = $state<Id<'productSessions'> | null>(null);
 	let contextMenu = $state<SessionContextMenuState | null>(null);
 	let deletingSessionIds = $state<Id<'productSessions'>[]>([]);
+	let hasAutoSelectedSession = false;
 
 	const convex = useConvexClient();
 	const productSessionsQuery = useQuery(api.productSessions.listProductSessions, () =>
@@ -63,9 +73,10 @@
 
 	$effect(() => {
 		if (!$authState.isAuthenticated) {
-			stopRealtimeConversation();
+			void stopRealtimeConversation();
 			pendingProductSessionIds = [];
 			selectedSessionId = null;
+			hasAutoSelectedSession = false;
 			return;
 		}
 
@@ -85,13 +96,23 @@
 		}
 
 		if (!pendingProductSessionIds.includes(selectedSessionId)) {
-			stopRealtimeConversation();
+			void stopRealtimeConversation();
 			selectedSessionId = null;
 		}
 	});
 
+	$effect(() => {
+		if (!$authState.isAuthenticated) return;
+		if (hasAutoSelectedSession || selectedSessionId || pendingProductSessionIds.length > 0) return;
+		if (!productSessionsQuery.data || productSessionsQuery.error || productSessions.length === 0)
+			return;
+
+		selectedSessionId = productSessions[0].id;
+		hasAutoSelectedSession = true;
+	});
+
 	onDestroy(() => {
-		stopRealtimeConversation();
+		void stopRealtimeConversation();
 	});
 
 	function toErrorMessage(error: unknown) {
@@ -117,6 +138,29 @@
 		realtimeStatusTimer = null;
 	}
 
+	function clearActiveRealtimeSession() {
+		activeRealtimeSession = null;
+	}
+
+	function closeActiveRealtimeSession() {
+		const session = activeRealtimeSession;
+		clearActiveRealtimeSession();
+		session?.close();
+	}
+
+	async function clearConversationHistorySync() {
+		const conversationHistorySync = activeConversationHistorySync;
+		activeConversationHistorySync = null;
+		if (!conversationHistorySync) return;
+		try {
+			await conversationHistorySync.flush();
+		} catch (error) {
+			errorMessage = `Failed to save conversation history. ${toErrorMessage(error)}`;
+		} finally {
+			conversationHistorySync.dispose();
+		}
+	}
+
 	function setRealtimeStatusMessage(message: string, visibleMs = 10000) {
 		clearRealtimeStatusTimer();
 		realtimeStatusMessage = message;
@@ -126,27 +170,32 @@
 		}, visibleMs);
 	}
 
-	function stopRealtimeConversation() {
-		clearRealtimeStatusTimer();
-		clearRealtimeRecoveryTimer();
-		const session = activeRealtimeSession;
-		activeRealtimeSession = null;
-		session?.close();
+	function resetRealtimeConnectionState() {
 		isRealtimeConnecting = false;
 		isRealtimeConnected = false;
 		isAssistantSpeaking = false;
+	}
+
+	async function stopRealtimeConversation() {
+		clearRealtimeStatusTimer();
+		clearRealtimeRecoveryTimer();
+		closeActiveRealtimeSession();
+		resetRealtimeConnectionState();
 		isMicMuted = true;
 		realtimeRecoveryAttempts = 0;
 		realtimeRecoveryInProgress = false;
 		realtimeStatusMessage = null;
+
+		// Clear the active session state immediately so follow-up UI actions target the new session,
+		// then let the slower history flush finish in the background of this shutdown call.
+		await clearConversationHistorySync();
 	}
 
-	function markRealtimeDisconnected() {
+	async function markRealtimeDisconnected() {
 		clearRealtimeRecoveryTimer();
-		activeRealtimeSession = null;
-		isRealtimeConnecting = false;
-		isRealtimeConnected = false;
-		isAssistantSpeaking = false;
+		clearActiveRealtimeSession();
+		resetRealtimeConnectionState();
+		await clearConversationHistorySync();
 	}
 
 	function clearRealtimeRecoveryTimer() {
@@ -155,14 +204,11 @@
 		realtimeRecoveryTimer = null;
 	}
 
-	function closeRealtimeSessionForRecovery() {
+	async function closeRealtimeSessionForRecovery() {
 		clearRealtimeRecoveryTimer();
-		const session = activeRealtimeSession;
-		activeRealtimeSession = null;
-		session?.close();
-		isRealtimeConnecting = false;
-		isRealtimeConnected = false;
-		isAssistantSpeaking = false;
+		closeActiveRealtimeSession();
+		resetRealtimeConnectionState();
+		await clearConversationHistorySync();
 	}
 
 	function setRealtimeMicMuted(muted: boolean) {
@@ -185,7 +231,7 @@
 		realtimeRecoveryInProgress = true;
 		realtimeRecoveryAttempts += 1;
 		setRealtimeStatusMessage('Realtime connection lost. Reconnecting...', 15000);
-		closeRealtimeSessionForRecovery();
+		await closeRealtimeSessionForRecovery();
 
 		try {
 			await startRealtimeConversation({
@@ -294,13 +340,13 @@
 				if (session !== activeRealtimeSession) return;
 				errorMessage = toErrorMessage(event.error);
 				if (session.transport.status === 'disconnected') {
-					stopRealtimeConversation();
+					void stopRealtimeConversation();
 				}
 			});
 
 			session.transport.on('disconnected', () => {
 				if (session !== activeRealtimeSession) return;
-				markRealtimeDisconnected();
+				void markRealtimeDisconnected();
 				errorMessage = 'Realtime voice session disconnected.';
 				setRealtimeStatusMessage('Realtime transport disconnected.', 15000);
 			});
@@ -315,6 +361,23 @@
 				return;
 			}
 
+			await seedRealtimeConversationHistory(session, bootstrap.conversationHistory);
+			if (session !== activeRealtimeSession) {
+				session.close();
+				return;
+			}
+
+			activeConversationHistorySync = persistRealtimeConversationHistory(
+				session,
+				convex,
+				bootstrap,
+				{
+					onConversationHistorySyncError: (error) => {
+						errorMessage = `Failed to save conversation history. ${toErrorMessage(error)}`;
+					}
+				}
+			);
+
 			isRealtimeConnecting = false;
 			isRealtimeConnected = true;
 			session.mute(options.startMuted ?? false);
@@ -324,7 +387,7 @@
 			);
 		} catch (error) {
 			errorMessage = toErrorMessage(error);
-			stopRealtimeConversation();
+			void stopRealtimeConversation();
 		}
 	}
 
@@ -341,19 +404,50 @@
 		void startRealtimeConversation();
 	}
 
+	function getRequestedSessionId() {
+		return pendingSelectedSessionId ?? selectedSessionId;
+	}
+
+	async function switchSelectedSession(
+		nextSessionId: Id<'productSessions'> | null,
+		options: {
+			clearErrorMessage?: boolean;
+		} = {}
+	) {
+		pendingSelectedSessionId = nextSessionId;
+		const requestId = ++sessionSelectionRequestId;
+
+		try {
+			await stopRealtimeConversation();
+			if (requestId !== sessionSelectionRequestId) {
+				return;
+			}
+
+			if (options.clearErrorMessage) {
+				errorMessage = null;
+			}
+			selectedSessionId = nextSessionId;
+		} finally {
+			if (requestId === sessionSelectionRequestId) {
+				pendingSelectedSessionId = undefined;
+			}
+		}
+	}
+
 	function selectProductSession(sessionId: Id<'productSessions'>) {
-		if (sessionId === selectedSessionId) {
+		if (sessionId === getRequestedSessionId()) {
 			return;
 		}
 
-		stopRealtimeConversation();
-		selectedSessionId = sessionId;
+		void switchSelectedSession(sessionId);
 	}
 
 	function startNewSession() {
-		stopRealtimeConversation();
-		errorMessage = null;
-		selectedSessionId = null;
+		if (getRequestedSessionId() === null) {
+			return;
+		}
+
+		void switchSelectedSession(null, { clearErrorMessage: true });
 	}
 
 	function openSessionContextMenu(event: MouseEvent, sessionId: Id<'productSessions'>) {
@@ -376,8 +470,8 @@
 
 		try {
 			if (sessionId === selectedSessionId) {
-				stopRealtimeConversation();
 				selectedSessionId = null;
+				await stopRealtimeConversation();
 			}
 
 			await convex.mutation(api.productSessions.deleteProductSession, {

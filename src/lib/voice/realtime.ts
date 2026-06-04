@@ -1,4 +1,4 @@
-import type { RealtimeSessionConfig } from '@openai/agents/realtime';
+import type { RealtimeItem, RealtimeSessionConfig } from '@openai/agents/realtime';
 import {
 	OpenAIRealtimeWebRTC,
 	RealtimeAgent,
@@ -15,6 +15,8 @@ export type RealtimeSessionBootstrap = {
 	agentName: string;
 	clientSecret: string;
 	config: Partial<RealtimeSessionConfig>;
+	conversationHistory: RealtimeItem[];
+	conversationHistoryRevision: number;
 	expiresAt: number | null;
 	instructions: string;
 	model: string;
@@ -31,7 +33,13 @@ export type PeerConnectionStateSnapshot = {
 };
 
 export type RealtimeSessionDiagnostics = {
+	onConversationHistorySyncError?: (error: unknown) => void;
 	onPeerConnectionStateChange?: (state: PeerConnectionStateSnapshot) => void;
+};
+
+export type RealtimeConversationHistorySync = {
+	dispose: () => void;
+	flush: () => Promise<void>;
 };
 
 const engineeringPlanSchema = z.object({
@@ -69,6 +77,140 @@ function createSaveEngineeringPlanTool(bootstrap: RealtimeSessionBootstrap, conv
 				: 'Engineering plan updated.';
 		}
 	});
+}
+
+function cloneHistory(history: RealtimeItem[]): RealtimeItem[] {
+	return JSON.parse(JSON.stringify(history)) as RealtimeItem[];
+}
+
+function normalizeHistoryValue(value: unknown): unknown {
+	if (Array.isArray(value)) {
+		return value.map(normalizeHistoryValue);
+	}
+
+	if (!value || typeof value !== 'object') {
+		return value;
+	}
+
+	return Object.fromEntries(
+		Object.entries(value as Record<string, unknown>)
+			.sort(([leftKey], [rightKey]) => leftKey.localeCompare(rightKey))
+			.map(([key, nestedValue]) => [key, normalizeHistoryValue(nestedValue)])
+	);
+}
+
+function serializeHistory(history: RealtimeItem[]): string {
+	return JSON.stringify(normalizeHistoryValue(history));
+}
+
+export async function seedRealtimeConversationHistory(
+	session: RealtimeSession,
+	history: RealtimeItem[]
+) {
+	if (history.length === 0) {
+		return;
+	}
+
+	const targetHistory = cloneHistory(history);
+	const targetSignature = serializeHistory(targetHistory);
+	if (serializeHistory(session.history) === targetSignature) {
+		return;
+	}
+
+	await new Promise<void>((resolve, reject) => {
+		const timeout = setTimeout(() => {
+			session.off('history_updated', handleHistoryUpdated);
+			reject(new Error('Timed out while restoring conversation history.'));
+		}, 10000);
+
+		const handleHistoryUpdated = (updatedHistory: RealtimeItem[]) => {
+			if (serializeHistory(updatedHistory) !== targetSignature) {
+				return;
+			}
+
+			clearTimeout(timeout);
+			session.off('history_updated', handleHistoryUpdated);
+			resolve();
+		};
+
+		session.on('history_updated', handleHistoryUpdated);
+		session.updateHistory(targetHistory);
+	});
+}
+
+export function persistRealtimeConversationHistory(
+	session: RealtimeSession,
+	convex: ConvexClient,
+	bootstrap: RealtimeSessionBootstrap,
+	diagnostics: RealtimeSessionDiagnostics = {}
+): RealtimeConversationHistorySync {
+	let latestSnapshot: {
+		history: RealtimeItem[];
+		historyRevision: number;
+	} | null = null;
+	let flushPromise: Promise<void> | null = null;
+	let nextHistoryRevision = bootstrap.conversationHistoryRevision;
+	const getLatestSnapshot = () => latestSnapshot;
+
+	const runFlush = async () => {
+		if (flushPromise) {
+			return flushPromise;
+		}
+
+		flushPromise = (async () => {
+			while (latestSnapshot) {
+				const snapshotToPersist = latestSnapshot;
+				latestSnapshot = null;
+
+				try {
+					const result = await convex.mutation(
+						api.productSessionConversation.syncProductSessionConversationHistory,
+						{
+							productSessionId: bootstrap.productSessionId,
+							historyRevision: snapshotToPersist.historyRevision,
+							history: snapshotToPersist.history
+						}
+					);
+					nextHistoryRevision = Math.max(nextHistoryRevision, result.latestRevision);
+				} catch (error) {
+					const queuedSnapshot = getLatestSnapshot();
+					if (
+						!queuedSnapshot ||
+						queuedSnapshot.historyRevision < snapshotToPersist.historyRevision
+					) {
+						latestSnapshot = snapshotToPersist;
+					}
+					throw error;
+				}
+			}
+		})().finally(() => {
+			flushPromise = null;
+		});
+
+		return flushPromise;
+	};
+
+	const handleHistoryUpdated = (history: RealtimeItem[]) => {
+		nextHistoryRevision += 1;
+		latestSnapshot = {
+			history: cloneHistory(history),
+			historyRevision: nextHistoryRevision
+		};
+		void runFlush().catch((error) => {
+			diagnostics.onConversationHistorySyncError?.(error);
+		});
+	};
+
+	session.on('history_updated', handleHistoryUpdated);
+
+	return {
+		dispose: () => {
+			session.off('history_updated', handleHistoryUpdated);
+		},
+		flush: async () => {
+			await runFlush();
+		}
+	};
 }
 
 export async function createSpeechToSpeechSession(
