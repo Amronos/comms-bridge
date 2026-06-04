@@ -83,8 +83,24 @@ function cloneHistory(history: RealtimeItem[]): RealtimeItem[] {
 	return JSON.parse(JSON.stringify(history)) as RealtimeItem[];
 }
 
+function normalizeHistoryValue(value: unknown): unknown {
+	if (Array.isArray(value)) {
+		return value.map(normalizeHistoryValue);
+	}
+
+	if (!value || typeof value !== 'object') {
+		return value;
+	}
+
+	return Object.fromEntries(
+		Object.entries(value as Record<string, unknown>)
+			.sort(([leftKey], [rightKey]) => leftKey.localeCompare(rightKey))
+			.map(([key, nestedValue]) => [key, normalizeHistoryValue(nestedValue)])
+	);
+}
+
 function serializeHistory(history: RealtimeItem[]): string {
-	return JSON.stringify(history);
+	return JSON.stringify(normalizeHistoryValue(history));
 }
 
 export async function seedRealtimeConversationHistory(

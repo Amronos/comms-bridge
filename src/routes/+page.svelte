@@ -34,6 +34,8 @@
 	let realtimeRecoveryInProgress = false;
 	let realtimeRecoveryTimer: ReturnType<typeof setTimeout> | null = null;
 	let realtimeStatusTimer: ReturnType<typeof setTimeout> | null = null;
+	let sessionSelectionRequestId = 0;
+	let pendingSelectedSessionId: Id<'productSessions'> | null | undefined = undefined;
 
 	let selectedSessionId = $state<Id<'productSessions'> | null>(null);
 	let contextMenu = $state<SessionContextMenuState | null>(null);
@@ -402,19 +404,50 @@
 		void startRealtimeConversation();
 	}
 
+	function getRequestedSessionId() {
+		return pendingSelectedSessionId ?? selectedSessionId;
+	}
+
+	async function switchSelectedSession(
+		nextSessionId: Id<'productSessions'> | null,
+		options: {
+			clearErrorMessage?: boolean;
+		} = {}
+	) {
+		pendingSelectedSessionId = nextSessionId;
+		const requestId = ++sessionSelectionRequestId;
+
+		try {
+			await stopRealtimeConversation();
+			if (requestId !== sessionSelectionRequestId) {
+				return;
+			}
+
+			if (options.clearErrorMessage) {
+				errorMessage = null;
+			}
+			selectedSessionId = nextSessionId;
+		} finally {
+			if (requestId === sessionSelectionRequestId) {
+				pendingSelectedSessionId = undefined;
+			}
+		}
+	}
+
 	function selectProductSession(sessionId: Id<'productSessions'>) {
-		if (sessionId === selectedSessionId) {
+		if (sessionId === getRequestedSessionId()) {
 			return;
 		}
 
-		void stopRealtimeConversation();
-		selectedSessionId = sessionId;
+		void switchSelectedSession(sessionId);
 	}
 
 	function startNewSession() {
-		void stopRealtimeConversation();
-		errorMessage = null;
-		selectedSessionId = null;
+		if (getRequestedSessionId() === null) {
+			return;
+		}
+
+		void switchSelectedSession(null, { clearErrorMessage: true });
 	}
 
 	function openSessionContextMenu(event: MouseEvent, sessionId: Id<'productSessions'>) {
